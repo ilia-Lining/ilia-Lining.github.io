@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>POLYMORPH: COMFORT EDITION</title>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', monospace; color: #fff; perspective: 1200px; }
+        canvas { display: block; transform-style: preserve-3d; transition: transform 0.1s ease-out; cursor: none; }
+        #ui { position: fixed; top: 25px; left: 25px; pointer-events: none; z-index: 10; opacity: 0.9; }
+        #overlay, #debugMenu { position: fixed; inset: 0; background: radial-gradient(circle, rgba(15,15,15,0.9) 0%, rgba(0,0,0,1) 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 20; cursor: default; }
+        #debugMenu { display: none; z-index: 30; }
+        #bossNameUI { position: fixed; width: 100%; text-align: center; top: 35%; font-size: 72px; font-weight: bold; text-shadow: 0 0 40px #fff; pointer-events: none; z-index: 15; opacity: 0; transition: all 0.8s; letter-spacing: 15px; }
+        .lang-btn { padding: 8px 20px; font-size: 16px; border: 1px solid #444; background: #000; color: #777; cursor: pointer; }
+        .lang-btn.active { border-color: #0ff; color: #fff; box-shadow: 0 0 15px #0ff; }
+        button { padding: 18px 60px; font-size: 26px; background: none; border: 3px solid #fff; color: #fff; cursor: pointer; margin: 12px; transition: 0.4s; text-transform: uppercase; }
+        button:hover { background: #fff; color: #000; box-shadow: 0 0 60px #fff; }
+        .bar-wrap { width: 320px; height: 14px; background: rgba(255,255,255,0.05); margin-top: 10px; border: 1px solid #444; position: relative; overflow: hidden; }
+        #chronoFill { width: 0%; height: 100%; background: linear-gradient(90deg, #0ff, #fff, #0ff); background-size: 200% 100%; animation: moveGrad 3s linear infinite; }
+        #shiftFill { width: 0%; height: 100%; background: linear-gradient(90deg, #f0f, #ff00ff, #800080); background-size: 200% 100%; animation: moveGrad 2s linear infinite; }
+        @keyframes moveGrad { 0% { background-position: 0% 50%; } 100% { background-position: 200% 50%; } }
+    </style>
+</head>
+<body>
+
+<div id="bossNameUI"></div>
+<div id="ui">
+    <div id="scoreDisplay">RESONANCE: 0</div>
+    <div id="energyTxt" style="font-size: 26px; font-weight: bold; margin-bottom: 5px;">STABILITY: 100%</div>
+    <div id="slowLabel" style="font-size:11px; opacity:0.6;">TIME SLOW</div>
+    <div class="bar-wrap"><div id="chronoFill"></div></div>
+    <div id="shiftLabel" style="margin-top:12px; font-size:11px; opacity:0.6;">PHASE SHIFT (LMB)</div>
+    <div class="bar-wrap"><div id="shiftFill"></div></div>
+</div>
+
+<div id="debugMenu">
+    <h1 id="pauseTitle">SYSTEM PAUSED</h1>
+    <button onclick="skipTo(1)">Δ-ZERO</button>
+    <button onclick="skipTo(2)">θ-FRACTAL</button>
+    <button onclick="skipTo(3)">λ-VELOCITY</button>
+    <button onclick="skipTo(4)">Φ-HARMONIC</button>
+    <button onclick="skipTo(5)">Ω-SINGULARITY</button>
+    <div id="masterHint" style="color: #ff0; font-size: 14px; margin-top: 20px;">MASTER-COMMS ACTIVE</div>
+    <p id="resumeHint" style="font-size: 12px; margin-top: 25px; opacity: 0.5;">PRESS 'L'</p>
+</div>
+
+<div id="overlay">
+    <div class="lang-select">
+        <button class="lang-btn active" onclick="setLang('ru')">RU</button>
+        <button class="lang-btn" onclick="setLang('en')">EN</button>
+    </div>
+    <h1 style="font-size: 80px; letter-spacing: 20px;">POLYMORPH</h1>
+    <button id="resumeBtn">INITIATE CORE</button>
+</div>
+
+<canvas id="c"></canvas>
+
+<script>
+/**
+ * AUDIO ENGINE
+ */
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+const sounds = {};
+const music = { bgm: null, isPlaying: false };
+
+function loadSfx(name, path) {
+    fetch(path)
+        .then(res => res.arrayBuffer())
+        .then(buffer => audioCtx.decodeAudioData(buffer))
+        .then(decoded => {
+            sounds[name] = decoded;
+        })
+        .catch(e => console.error("Ошибка загрузки звука:", path));
+}
+
+function loadMusic(path) {
+    const au = new Audio();
+    au.src = path;
+    au.loop = true;
+    au.preload = "auto";
+    music.bgm = au;
+}
+
+// Загрузка ассетов согласно твоим скриншотам
+loadMusic('assets/music/bgm_boss.mp3');
+loadSfx('boss_shoot', 'assets/sfx/boss_shoot.mp3');
+loadSfx('crystal', 'assets/sfx/crystal.mp3');
+loadSfx('evolve', 'assets/sfx/evolve.mp3');
+loadSfx('hit', 'assets/sfx/hit.mp3');
+loadSfx('laser', 'assets/sfx/laser.mp3');
+loadSfx('shift_on', 'assets/sfx/shift_on.mp3');
+// ВАЖНО: Используем имя файла из твоего скриншота "shift_off копия.mp3"
+loadSfx('shift_off', 'assets/sfx/shift_off копия.mp3'); 
+loadSfx('slow_on', 'assets/sfx/slow_on.mp3');
+loadSfx('slow_off', 'assets/sfx/slow_off.mp3');
+loadSfx('ticking', 'assets/sfx/ticking.mp3');
+
+function playFileSfx(name, volume = 0.5) {
+    if (!sounds[name]) return;
+    const source = audioCtx.createBufferSource();
+    const gain = audioCtx.createGain();
+    source.buffer = sounds[name];
+    gain.gain.value = volume;
+    source.connect(gain).connect(audioCtx.destination);
+    source.start(0);
+}
+
+/**
+ * CORE LOGIC
+ */
+const I18N = {
+    ru: { stability: "СТАБИЛЬНОСТЬ", resonance: "РЕЗОНАНС", slow: "ЗАМЕДЛЕНИЕ", shift: "ФАЗОВЫЙ СДВИГ (ЛКМ)", pause: "ПАУЗА", hint: "МАСТЕР-КОД: H / L", resume: "НАЖМИТЕ 'L'", init: "ЗАПУСК ЯДРА", code: "КОД:", err: "ОТКАЗ", final: "КОД: 2547" },
+    en: { stability: "STABILITY", resonance: "RESONANCE", slow: "TIME SLOW", shift: "PHASE SHIFT (LMB)", pause: "PAUSE", hint: "MASTER-CODE: H / L", resume: "PRESS 'L'", init: "INITIATE CORE", code: "CODE:", err: "DENIED", final: "CODE: 2547" }
+};
+
+let curLang = 'ru', w, h, score = 0, active = false, frame = 0, isPaused = false;
+let energy = 100, timeSlow = 0, timeScale = 1;
+let shake = 0, flash = 0, transforming = false, gameEnding = false;
+let camX = 0, camY = 0, dmgFlash = 0, invul = 0;
+let shiftActive = false, shiftCD = 0, shiftDuration = 0;
+let player = { x: 0, y: 0, r: 6, drawR: 12, trail: [] };
+let items = [], bullets = [], spheres = [], targetedLasers = [], petals = [];
+let boss = null, mx = 0, my = 0, comboCount = 0, comboTimer = 0, isUnlocked = false;
+const MARGIN = 40;
+
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+const overlay = document.getElementById('overlay'), resumeBtn = document.getElementById('resumeBtn');
+const bossNameUI = document.getElementById('bossNameUI'), debugMenu = document.getElementById('debugMenu');
+
+const lerp = (a, b, t) => a + (b - a) * t;
+
+function setLang(l) {
+    curLang = l;
+    document.querySelectorAll('.lang-btn').forEach(b => b.classList.toggle('active', b.innerText.toLowerCase() === l));
+    const t = I18N[curLang];
+    document.getElementById('slowLabel').innerText = t.slow; document.getElementById('shiftLabel').innerText = t.shift;
+    document.getElementById('pauseTitle').innerText = t.pause; document.getElementById('masterHint').innerText = t.hint;
+    document.getElementById('resumeHint').innerText = t.resume; document.getElementById('resumeBtn').innerText = t.init;
+}
+
+function togglePause(s) {
+    isPaused = s !== undefined ? s : !isPaused;
+    debugMenu.style.display = isPaused ? 'flex' : 'none';
+    c.style.cursor = isPaused ? 'default' : 'none';
+    if (music.bgm) {
+        if (isPaused) music.bgm.pause();
+        else if (active && boss) music.bgm.play().catch(e => {}); 
+    }
+}
+
+function checkAccess() {
+    if (isUnlocked) return true;
+    let code = prompt(I18N[curLang].code);
+    if (code === "2547") return isUnlocked = true;
+    return false;
+}
+
+function resetGame() {
+    score = 0; energy = 100; timeSlow = 0; frame = 0;
+    items = []; bullets = []; spheres = []; targetedLasers = []; petals = [];
+    boss = null; transforming = false; gameEnding = false;
+    shiftCD = 0; shiftDuration = 0; shiftActive = false; isPaused = false;
+    overlay.style.display = 'none'; c.style.cursor = 'none'; active = true;
+    if (music.bgm) {
+        music.bgm.pause();
+        music.bgm.currentTime = 0;
+    }
+}
+
+function skipTo(p) { if (!active) resetGame(); if (!boss) spawnBoss(); boss.phase = p - 1; evolveBoss(); togglePause(false); }
+
+function spawnFlowey() {
+    let num = 14 + (boss ? boss.phase * 3 : 0);
+    for(let i=0; i < num; i++) {
+        let a = (i/num) * Math.PI * 2;
+        let px = player.x + Math.cos(a) * 300, py = player.y + Math.sin(a) * 300;
+        let ang = Math.atan2(player.y - py, player.x - px);
+        petals.push({ x: px, y: py, vx: Math.cos(ang) * 8, vy: Math.sin(ang) * 8, timer: 35 });
+    }
+    playFileSfx('boss_shoot', 0.3);
+}
+
+function update() {
+    if (!active || gameEnding || isPaused) return;
+    if (!transforming) frame++;
+    if (shake > 0) shake *= 0.9; flash -= 0.04; dmgFlash -= 0.1; invul -= 1;
+
+    let sat = 1, bright = 1, blur = 0;
+    if (energy < 40) {
+        let factor = Math.max(0, energy / 40);
+        sat = 0.2 + 0.8 * factor;
+        bright = 0.5 + 0.5 * factor;
+        if (music.bgm && boss && !music.bgm.paused) { 
+            music.bgm.playbackRate = 0.6 + 0.4 * factor;
+            music.bgm.volume = Math.max(0.1, factor);
+        }
+        if(frame % 15 < 2) playFileSfx('ticking', 0.15);
+    } else if (music.bgm) {
+        music.bgm.playbackRate = 1;
+        music.bgm.volume = 1;
+    }
+
+    if (shiftActive) { blur = 2; } 
+    c.style.filter = `saturate(${sat}) brightness(${bright}) blur(${blur}px)`;
+
+    if (shiftActive) {
+        shiftDuration--; if (shiftDuration <= 0) { shiftActive = false; shiftCD = 300; playFileSfx('shift_off'); }
+    } else if (shiftCD > 0) shiftCD--;
+
+    timeScale = (timeSlow > 0 && !transforming) ? 0.2 : (transforming ? 0 : 1);
+    if (timeSlow > 0) {
+        timeSlow--;
+        if (timeSlow === 0) playFileSfx('slow_off');
+    }
+    if (!transforming) energy -= 0.15 * timeScale;
+
+    if (energy > (boss?.phase === 5 ? 350 : 200)) energy = (boss?.phase === 5 ? 350 : 200);
+    
+    if (energy <= 0) { 
+        active = false; 
+        overlay.style.display = 'flex'; 
+        c.style.cursor = 'default'; 
+        if(music.bgm) { music.bgm.pause(); music.bgm.currentTime = 0; } 
+    }
+
+    camX = lerp(camX, (mx - w/2) * 0.06, 0.1); camY = lerp(camY, (my - h/2) * 0.06, 0.1);
+    c.style.transform = `translate3d(${-camX}px, ${-camY}px, 0) rotateY(${camX*0.2}deg) rotateX(${-camY*0.2}deg)`;
+
+    let mSpd = shiftActive ? (0.05 + (shiftDuration/600)*0.07) : 0.23;
+    let tx = lerp(player.x, mx, mSpd), ty = lerp(player.y, my, mSpd);
+
+    if (boss) {
+        let d = Math.hypot(tx - boss.x, ty - boss.y);
+        if (d < 120) {
+            let a = Math.atan2(ty - boss.y, tx - boss.x);
+            tx = boss.x + Math.cos(a) * 120; ty = boss.y + Math.sin(a) * 120;
+        }
+    }
+    
+    player.x = Math.max(MARGIN + 5, Math.min(w - MARGIN - 5, tx)); 
+    player.y = Math.max(MARGIN + 5, Math.min(h - MARGIN - 5, ty));
+
+    player.trail.unshift({x: player.x, y: player.y, h: energy > 201, s: shiftActive, l: energy < 40});
+    if(player.trail.length > 20) player.trail.pop();
+
+    if (boss && !transforming) {
+        boss.rot += 0.035 * timeScale;
+        if (frame % 450 === 0) {
+            for(let i=0; i<60; i++) {
+                let a = (i/60)*Math.PI*2;
+                bullets.push({ x: boss.x, y: boss.y, vx: Math.cos(a)*5, vy: Math.sin(a)*5, wave: true, r: 30 });
+            }
+            playFileSfx('boss_shoot', 0.6);
+        }
+        if (boss.attackTimer > 0) boss.attackTimer -= timeScale;
+        else {
+            let r = Math.random();
+            if (boss.phase >= 3 && r < 0.25 && comboCount <= 0) { comboCount = Math.floor(Math.random()*6)+5; comboTimer = 0; }
+            if (comboCount > 0) {
+                if (comboTimer <= 0) { spawnFlowey(); comboCount--; comboTimer = 60; }
+                else comboTimer -= timeScale;
+            } else {
+                if (r < 0.35) {
+                    for(let i=0; i<18; i++) {
+                        let a = (i/18)*Math.PI*2 + frame*0.1;
+                        bullets.push({ x: boss.x, y: boss.y, vx: Math.cos(a)*6.5, vy: Math.sin(a)*6.5, mag: boss.phase>=4, life: 300 });
+                    }
+                    playFileSfx('boss_shoot', 0.4);
+                } else if (r < 0.65) {
+                    targetedLasers.push({ x: boss.x, y: boss.y, tx: player.x, ty: player.y, timer: 65, active: false, opacity: 1 });
+                } else spawnFlowey();
+                boss.attackTimer = 70 - (boss.phase * 6);
+            }
+        }
+        if (timeSlow > 0 && Math.hypot(player.x-boss.x, player.y-boss.y) < 210) {
+            boss.hp -= (energy > 201 ? 60 : 26) * (shiftActive ? 0.5 : 1);
+            if (frame % 10 === 0) playFileSfx('hit', 0.2);
+            if (boss.hp <= 0) boss.phase < 5 ? evolveBoss() : startFinalDeath();
+        }
+    }
+
+    // ИСПРАВЛЕННЫЕ ЦИКЛЫ (Удаление через обратный перебор)
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        let b = bullets[i];
+        b.x += b.vx * timeScale; b.y += b.vy * timeScale;
+        if (b.mag && b.life > 0) {
+            b.life -= timeScale; let a = Math.atan2(player.y - b.y, player.x - b.x);
+            b.vx = lerp(b.vx, Math.cos(a) * 7, 0.03 * timeScale); b.vy = lerp(b.vy, Math.sin(a) * 7, 0.03 * timeScale);
+        }
+        if (Math.hypot(player.x - b.x, player.y - b.y) < player.r + (b.wave ? 28 : 8)) {
+            if (shiftActive && (b.wave || b.mag)) {
+                if (frame % 15 === 0) { boss.hp -= 40; shake = 3; playFileSfx('hit', 0.2); }
+            } else if (invul <= 0) {
+                energy -= 14 * (shiftActive ? 1.5 : 1); bullets.splice(i, 1); dmgFlash = 1.2; invul = 7; playFileSfx('hit', 0.5);
+                continue;
+            }
+        }
+        if (b.x < -800 || b.x > w + 800 || b.y < -800 || b.y > h + 800) bullets.splice(i, 1);
+    }
+
+    for (let i = petals.length - 1; i >= 0; i--) {
+        let p = petals[i];
+        if (p.timer > 0) p.timer -= timeScale;
+        else {
+            p.x += p.vx * timeScale; p.y += p.vy * timeScale;
+            if (invul <= 0 && Math.hypot(player.x - p.x, player.y - p.y) < player.r + 7) {
+                energy -= 18 * (shiftActive ? 1.5 : 1); petals.splice(i, 1); dmgFlash = 1.2; invul = 12; playFileSfx('hit', 0.5);
+                continue;
+            }
+            if (p.x < -200 || p.x > w + 200 || p.y < -200 || p.y > h + 200) petals.splice(i, 1);
+        }
+    }
+
+    for (let i = targetedLasers.length - 1; i >= 0; i--) {
+        let l = targetedLasers[i];
+        l.timer -= timeScale;
+        if (l.timer > 20) { l.tx = player.x; l.ty = player.y; }
+        else if (l.timer <= 20 && l.timer > 0) {
+            if (!l.active) { playFileSfx('laser', 0.4); l.active = true; }
+            if (invul <= 0 && distToSegment({ x: player.x, y: player.y }, { x: l.x, y: l.y }, { x: l.x + (l.tx - l.x) * 6, y: l.y + (l.ty - l.y) * 6 }) < 20) {
+                energy -= 7 * (shiftActive ? 1.5 : 1); dmgFlash = 0.9; invul = 5; playFileSfx('hit', 0.3);
+            }
+        }
+        if (l.timer <= 0) { l.opacity -= 0.1 * timeScale; if (l.opacity <= 0) targetedLasers.splice(i, 1); }
+    }
+
+    function getSafePos() {
+        let px, py, d;
+        let attempts = 0;
+        do { 
+            px = MARGIN + 100 + Math.random()*(w-200-MARGIN*2); 
+            py = MARGIN + 100 + Math.random()*(h-200-MARGIN*2); 
+            d = boss ? Math.hypot(px-boss.x, py-boss.y) : 1000; 
+            attempts++;
+        } while (d < 300 && attempts < 20); 
+        return {x: px, y: py};
+    }
+    if (frame % 55 === 0 && items.length < 10) items.push(getSafePos());
+    for (let i = items.length - 1; i >= 0; i--) {
+        let it = items[i];
+        if (Math.hypot(player.x-it.x, player.y-it.y) < 35) { energy += 18; score += 120; items.splice(i,1); playFileSfx('crystal', 0.4); }
+    }
+
+    if (frame % 980 === 0) spheres.push(getSafePos());
+    for (let i = spheres.length - 1; i >= 0; i--) {
+        let s = spheres[i];
+        if (Math.hypot(player.x-s.x, player.y-s.y) < 40) { timeSlow = 300; energy += 15; spheres.splice(i,1); flash = 0.5; playFileSfx('slow_on', 0.6); }
+    }
+
+    if (!boss && score >= 500) spawnBoss();
+    document.getElementById('energyTxt').innerText = `${I18N[curLang].stability}: ${Math.ceil(energy)}%`;
+    document.getElementById('scoreDisplay').innerText = `${I18N[curLang].resonance}: ${score}`;
+    document.getElementById('chronoFill').style.width = (timeSlow/300 * 100) + '%';
+    document.getElementById('shiftFill').style.width = (shiftActive ? (shiftDuration/600)*100 : (shiftCD>0?(1-shiftCD/300)*100:100)) + '%';
+}
+
+function draw() {
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
+    ctx.save(); if (shake > 0) ctx.translate(Math.random()*shake-shake/2, Math.random()*shake-shake/2);
+    
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(MARGIN, MARGIN, w - MARGIN*2, h - MARGIN*2);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.03)'; ctx.lineWidth = 1;
+    for(let i=0; i<w; i+=100) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,h); ctx.stroke(); }
+    for(let j=0; j<h; j+=100) { ctx.beginPath(); ctx.moveTo(0,j); ctx.lineTo(w,j); ctx.stroke(); }
+
+    items.forEach(it => { 
+        ctx.fillStyle = '#0ff'; ctx.shadowBlur = 15; ctx.shadowColor = '#0ff'; ctx.fillRect(it.x-8, it.y-8, 16, 16); 
+    });
+
+    spheres.forEach(s => { 
+        let g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, 30);
+        g.addColorStop(0, '#fff'); g.addColorStop(0.5, '#ff0'); g.addColorStop(1, '#f0f');
+        ctx.fillStyle = g; ctx.shadowBlur = 30; ctx.shadowColor = '#f0f';
+        ctx.beginPath(); ctx.arc(s.x, s.y, 28, 0, 7); ctx.fill();
+    });
+
+    bullets.forEach(b => {
+        ctx.globalAlpha = (shiftActive && (b.wave || b.mag)) ? 0.3 : 1.0;
+        if (b.wave) {
+            let g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, 30);
+            g.addColorStop(0, '#fff'); g.addColorStop(0.2, '#f0f'); g.addColorStop(1, 'rgba(100,0,255,0)');
+            ctx.fillStyle = g; ctx.beginPath(); ctx.arc(b.x, b.y, 30, 0, 7); ctx.fill();
+        } else {
+            ctx.fillStyle = b.mag ? '#f0f' : '#fff'; ctx.shadowBlur = b.mag?15:5; ctx.shadowColor = '#f0f';
+            ctx.beginPath(); ctx.arc(b.x, b.y, 8, 0, 7); ctx.fill();
+        }
+        ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+    });
+
+    petals.forEach(p => { ctx.fillStyle = '#fff'; ctx.shadowBlur = 10; ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, 7); ctx.fill(); });
+
+    targetedLasers.forEach(l => {
+        if (l.active) {
+            ctx.strokeStyle = '#f00'; ctx.lineWidth = 20 * l.opacity; ctx.shadowBlur = 30; ctx.shadowColor = '#f00';
+            ctx.beginPath(); ctx.moveTo(l.x, l.y); ctx.lineTo(l.x+(l.tx-l.x)*6, l.y+(l.ty-l.y)*6); ctx.stroke();
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = 6 * l.opacity; ctx.beginPath(); ctx.moveTo(l.x, l.y); ctx.lineTo(l.x+(l.tx-l.x)*6, l.y+(l.ty-l.y)*6); ctx.stroke();
+        } else {
+            ctx.strokeStyle = 'rgba(255,0,0,0.5)'; ctx.lineWidth = 2; ctx.setLineDash([10,5]);
+            ctx.beginPath(); ctx.moveTo(l.x, l.y); ctx.lineTo(l.x+(l.tx-l.x)*6, l.y+(l.ty-l.y)*6); ctx.stroke(); ctx.setLineDash([]);
+        }
+    });
+
+    if (boss) {
+        let s = boss.phase+3; ctx.save(); ctx.translate(boss.x, boss.y); ctx.rotate(boss.rot);
+        ctx.strokeStyle = boss.color; ctx.lineWidth = 12; ctx.shadowBlur = 25; ctx.shadowColor = boss.color;
+        ctx.beginPath(); for(let i=0;i<=s;i++){ let a=(i/s)*Math.PI*2; ctx.lineTo(Math.cos(a)*105, Math.sin(a)*105); }
+        ctx.closePath(); ctx.stroke(); ctx.restore();
+        let aP = Math.atan2(player.y-boss.y, player.x-boss.x);
+        ctx.save(); ctx.translate(boss.x+Math.cos(aP)*45, boss.y+Math.sin(aP)*45); ctx.rotate(aP);
+        ctx.strokeStyle = boss.color; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(0,0,18,0,7); ctx.stroke();
+        ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.moveTo(10,0); ctx.lineTo(0,10); ctx.lineTo(-10,0); ctx.lineTo(0,-10); ctx.closePath(); ctx.fill();
+        ctx.restore();
+        ctx.fillStyle = "rgba(255,255,255,0.15)"; ctx.fillRect(boss.x-60, boss.y+150, 120, 8);
+        ctx.fillStyle = "#fff"; ctx.fillRect(boss.x-60, boss.y+150, (boss.hp/boss.maxHp)*120, 8);
+    }
+
+    if (shiftActive) {
+        ctx.strokeStyle = `rgba(255,0,255,${0.25+Math.sin(frame*0.12)*0.1})`; ctx.lineWidth = 50; ctx.strokeRect(0,0,w,h);
+    }
+
+    let pC = (energy < 40) ? '255,0,0' : (energy > 201 ? '0,200,255' : (shiftActive ? '255,0,255' : (dmgFlash > 0 ? '255,255,255' : '0,255,0')));
+    player.trail.forEach((t, i) => {
+        ctx.fillStyle = t.l ? `rgba(255,0,0,${(1-i/20)*0.3})` : (t.h ? `rgba(0,150,255,${(1-i/20)*0.5})` : (t.s ? `rgba(255,0,255,${(1-i/20)*0.3})` : `rgba(0,255,100,${(1-i/20)*0.4})`));
+        ctx.beginPath(); ctx.arc(t.x, t.y, player.drawR*(1-i/20), 0, 7); ctx.fill();
+    });
+    ctx.fillStyle = `rgb(${pC})`; ctx.shadowBlur = (energy<40||energy>201||shiftActive)?30:0; ctx.beginPath(); ctx.arc(player.x, player.y, player.drawR, 0, 7); ctx.fill();
+    ctx.restore(); if (flash > 0) { ctx.fillStyle = `rgba(255,255,255,${flash})`; ctx.fillRect(0,0,w,h); }
+}
+
+function evolveBoss() {
+    transforming = true; shake = 80; flash = 1.3; boss.phase++;
+    playFileSfx('evolve', 0.8);
+    boss.hp = 9000 + boss.phase * 4000; boss.maxHp = boss.hp;
+    boss.color = ['','#0f0','#ff0','#f00','#0af','#fff'][boss.phase];
+    bossNameUI.innerText = ["","Δ-ZERO","θ-FRACTAL","λ-VELOCITY","Φ-HARMONIC","Ω-SINGULARITY"][boss.phase];
+    bossNameUI.style.opacity = 1; setTimeout(() => { bossNameUI.style.opacity = 0; transforming = false; }, 2500);
+}
+
+function startFinalDeath() {
+    isUnlocked = true; gameEnding = true; shake = 200; bossNameUI.innerText = I18N[curLang].final; bossNameUI.style.opacity = 1;
+    if (music.bgm) { music.bgm.pause(); }
+    let f = 0; let finalInt = setInterval(() => { f++; flash = f/100; if(f>=100) { clearInterval(finalInt); location.reload(); } }, 40);
+}
+
+function spawnBoss() { 
+    boss = { x: w/2, y: 220, phase: 1, hp: 7000, maxHp: 7000, rot: 0, color: '#0f0', attackTimer: 45 };
+    bossNameUI.innerText = "Δ-ZERO"; bossNameUI.style.opacity = 1; setTimeout(() => bossNameUI.style.opacity = 0, 2000);
+    if(music.bgm) { 
+        music.bgm.currentTime = 0; 
+        music.bgm.play().catch(e => console.error("Браузер заблокировал музыку. Нужно взаимодействие.")); 
+    }
+}
+
+function distToSegment(p, v, w) {
+    let l2 = Math.hypot(v.x - w.x, v.y - w.y) ** 2;
+    if (l2 == 0) return Math.hypot(p.x - v.x, p.y - v.y);
+    let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(p.x - (v.x + t * (w.x - v.x)), p.y - (v.y + t * (w.y - v.y)));
+}
+
+window.addEventListener('keydown', e => {
+    let k = e.key.toLowerCase();
+    if (k === 'l' || k === 'д') { if (checkAccess()) togglePause(); }
+    if (k === 'h' || k === 'р') if (isUnlocked && active) { energy = Math.min(350, energy+100); playFileSfx('crystal', 0.5); flash = 0.3; }
+});
+window.addEventListener('mousedown', e => {
+    if (e.button === 0 && active && !isPaused) {
+        if (shiftActive) { 
+            shiftActive = false; shiftCD = (600 - shiftDuration)/2; 
+            playFileSfx('shift_off', 0.4); 
+        }
+        else if (shiftCD <= 0) { 
+            shiftActive = true; shiftDuration = 600; 
+            playFileSfx('shift_on', 0.4); 
+        }
+    }
+});
+resumeBtn.onclick = () => { 
+    audioCtx.resume(); 
+    if (music.bgm) {
+        // Хитрость для мобильных и Chrome: "прогреваем" аудио-тег
+        music.bgm.play().then(() => music.bgm.pause()).catch(() => {});
+    }
+    if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(()=>{});
+    overlay.style.display = 'none'; c.style.cursor = 'none'; if (!active) resetGame(); 
+};
+window.addEventListener('mousemove', e => { mx = e.clientX; my = e.clientY; });
+window.addEventListener('resize', () => { w = c.width = window.innerWidth; h = c.height = window.innerHeight; });
+w = c.width = window.innerWidth; h = c.height = window.innerHeight;
+
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+setLang('ru'); loop();
+</script>
+</body>
+</html>
